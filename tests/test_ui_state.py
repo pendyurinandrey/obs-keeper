@@ -40,3 +40,13 @@ def test_muted_and_unwatched_inputs():
     assert input_state("a", st, cfg, "en") == ("Muted", "ok")
     cfg.monitor.inputs = ["other"]
     assert input_state("a", status(watching=True), cfg, "en") == ("Not watched", "ok")
+
+
+def test_warning_state_and_row_text():
+    from obs_keeper.ui.state import WARNING
+
+    st = status(watching=True, warning=True, inputs=[
+        InputSnapshot("a", -91.0, 25.0, False, False, "silence", warning=True)])
+    assert tray_state(st) == WARNING
+    assert input_state("a", st, Config(), "en") == ("Quiet for 25 s", "bad")
+    assert tray_state(status(watching=True, warning=True, alerting=True)) == ALERT  # alert wins

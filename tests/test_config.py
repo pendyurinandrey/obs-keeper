@@ -46,10 +46,12 @@ def test_validate_defaults_are_valid_and_bad_values_reported():
     config = Config()
     config.obs.port = 0
     config.monitor.silence_seconds = 1
+    config.monitor.warn_seconds = 0
     config.monitor.silence_threshold_db = 5
+    config.alerts.sound_seconds = 0
     config.alerts.repeat_seconds = 1
     config.language = "de"
-    assert len(config.validate()) == 5
+    assert len(config.validate()) == 7
 
 
 def test_config_path_env_override(monkeypatch, tmp_path):

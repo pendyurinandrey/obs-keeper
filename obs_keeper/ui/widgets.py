@@ -4,7 +4,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from obs_keeper.ui.state import ALERT, IDLE, OFFLINE, WATCHING
+from obs_keeper.ui.state import ALERT, IDLE, OFFLINE, WARNING, WATCHING
 
 MIN_DB, MAX_DB = -90.0, 0.0
 
@@ -48,13 +48,15 @@ class LevelBar(QWidget):
         painter.drawLine(int(marker), int(rect.top()) - 2, int(marker), int(rect.bottom()) + 2)
 
 
-_TRAY_COLORS = {ALERT: RED, WATCHING: GREEN, IDLE: GREY, OFFLINE: AMBER}
-_TRAY_GLYPHS = {ALERT: "!", OFFLINE: "–"}
+_TRAY_COLORS = {ALERT: RED, WARNING: RED, WATCHING: GREEN, IDLE: GREY, OFFLINE: AMBER}
+_TRAY_GLYPHS = {ALERT: "!", WARNING: "!", OFFLINE: "–"}
+BLINKING = (ALERT, WARNING)
 
 
-def tray_icon(state: str) -> QIcon:
+def tray_icon(state: str, bright: bool = True) -> QIcon:
     """Menu-bar icon whose *shape* differs per state, not only its colour:
-    solid disc = watching, ring = connected but idle, "!" = audio lost, "–" = no connection."""
+    solid disc = watching, ring = connected but idle, "!" = silence / audio lost, "–" = no
+    connection. ``bright=False`` is the dim phase of a blinking (red "!") icon."""
     color = _TRAY_COLORS[state]
     size = 44
     pixmap = QPixmap(size, size)
@@ -62,7 +64,7 @@ def tray_icon(state: str) -> QIcon:
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    if state == IDLE:
+    if state == IDLE or not bright:
         painter.setPen(QPen(color, 4))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(4, 4, size - 8, size - 8)
@@ -76,7 +78,7 @@ def tray_icon(state: str) -> QIcon:
         font.setBold(True)
         font.setPixelSize(int(size * 0.62))
         painter.setFont(font)
-        painter.setPen(QColor("white"))
+        painter.setPen(QColor("white") if bright else color)
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, glyph)
     painter.end()
     return QIcon(pixmap)

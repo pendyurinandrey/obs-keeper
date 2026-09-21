@@ -1,6 +1,8 @@
 """The application window: live levels on the first tab, settings on the others."""
 
 import copy
+import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from obs_keeper import alerts as alerts_module
 from obs_keeper import credentials
-from obs_keeper.config import Config, save_config
+from obs_keeper.config import Config, config_path, save_config
 from obs_keeper.i18n import resolve_language, tr
 from obs_keeper.levels import SILENCE_FLOOR_DB
 from obs_keeper.monitor import CONNECTED, CONNECTING, Monitor, Status
@@ -45,8 +47,11 @@ class MainWindow(QMainWindow):
         config: Config,
         save: Callable[[Config], Path] = save_config,
         store_password: Callable[[str], None] = credentials.set_password,
+        config_file: Path | None = None,
     ):
         super().__init__()
+        self._config_file = config_file or config_path()
+        self._last_dirty_check = 0.0
         self._monitor = monitor
         self._config = config
         self._save_config = save
@@ -66,6 +71,10 @@ class MainWindow(QMainWindow):
         self._build_general_tab()
 
         self.message = QLabel()
+        self.dirty_label = QLabel()
+        self.dirty_label.setStyleSheet(f"color: {AMBER.name()}; font-weight: 600;")
+        self._t(self.dirty_label.setText, "ui.unsaved")
+        self.dirty_label.hide()
         self.revert_button, self.save_button = QPushButton(), QPushButton()
         self._t(self.revert_button.setText, "ui.btn.revert")
         self._t(self.save_button.setText, "ui.btn.save")
@@ -81,6 +90,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.addWidget(self.tabs)
+        layout.addWidget(self.dirty_label)
         layout.addWidget(self.bottom)
         self.setCentralWidget(central)
         self.setMinimumSize(680, 540)
@@ -213,9 +223,11 @@ class MainWindow(QMainWindow):
         self.threshold.setRange(-120.0, 0.0)
         self.threshold.setDecimals(0)
         self._t(lambda text: self.threshold.setSuffix(" " + text), "ui.unit.db")
-        self.window = self._spin(5, 24 * 3600, "ui.unit.s")
+        self.warn_window = self._spin(1, 24 * 3600, "ui.unit.s")
+        self.silence_window = self._spin(5, 24 * 3600, "ui.unit.s")
         self._form_row(form, "ui.mon.threshold", self.threshold)
-        self._form_row(form, "ui.mon.window", self.window)
+        self._form_row(form, "ui.mon.warn_window", self.warn_window)
+        self._form_row(form, "ui.mon.window", self.silence_window)
         layout.addLayout(form)
         self.only_recording = self._checkbox("ui.mon.only_recording")
         self.include_streaming = self._checkbox("ui.mon.include_streaming")
@@ -247,8 +259,10 @@ class MainWindow(QMainWindow):
         for name in alerts_module.available_voices():
             self.voice.addItem(name, name)
         self._t(lambda text: self.voice.setItemText(0, text), "ui.alerts.voice_default")
+        self.sound_seconds = self._spin(1, 300, "ui.unit.s")
         self.repeat = self._spin(10, 24 * 3600, "ui.unit.s")
         self._form_row(form, "ui.alerts.sound_name", sound_row)
+        self._form_row(form, "ui.alerts.sound_seconds", self.sound_seconds)
         self._form_row(form, "ui.alerts.voice", self.voice)
         self._form_row(form, "ui.alerts.repeat", self.repeat)
         layout.addWidget(self.notification)
@@ -294,6 +308,19 @@ class MainWindow(QMainWindow):
         self.language.addItem("Русский", "ru")
         self._t(lambda text: self.language.setItemText(0, text), "ui.lang.auto")
         self._form_row(form, "ui.general.language", self.language)
+        location = QLineEdit(str(self._config_file))
+        location.setReadOnly(True)
+        location.setCursorPosition(0)
+        reveal = QPushButton()
+        self._t(reveal.setText, "ui.btn.reveal")
+        reveal.clicked.connect(self._reveal_config_file)
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(location, 1)
+        row_layout.addWidget(reveal)
+        self.config_location = location
+        self._form_row(form, "ui.general.config_file", row)
         self._add_tab(page, "ui.tab.general")
 
     # -- settings <-> widgets -----------------------------------------------------------------
@@ -308,7 +335,8 @@ class MainWindow(QMainWindow):
         self.inputs_list.setEnabled(bool(mon.inputs))
         self._reload_inputs(checked=set(mon.inputs))
         self.threshold.setValue(mon.silence_threshold_db)
-        self.window.setValue(mon.silence_seconds)
+        self.warn_window.setValue(mon.warn_seconds)
+        self.silence_window.setValue(mon.silence_seconds)
         self.only_recording.setChecked(mon.only_while_recording)
         self.include_streaming.setChecked(mon.include_streaming)
         self.ignore_muted.setChecked(mon.ignore_muted)
@@ -316,6 +344,7 @@ class MainWindow(QMainWindow):
         self.notification.setChecked(al.notification)
         self.sound.setChecked(al.sound)
         self._select(self.sound_name, al.sound_name, al.sound_name)
+        self.sound_seconds.setValue(al.sound_seconds)
         self.speech.setChecked(al.speech)
         self._select(self.voice, al.speech_voice, al.speech_voice)
         self.repeat.setValue(al.repeat_seconds)
@@ -327,6 +356,7 @@ class MainWindow(QMainWindow):
         self.heal_cooldown.setValue(rem.cooldown_seconds)
         self._select(self.language, config.language, None)
         self.message.clear()
+        self._update_dirty()
 
     @staticmethod
     def _select(combo: QComboBox, data: str, add_label: str | None) -> None:
@@ -343,13 +373,15 @@ class MainWindow(QMainWindow):
         cfg.obs.port = self.port.value()
         cfg.monitor.inputs = self._selected_inputs() if self.selected_inputs.isChecked() else []
         cfg.monitor.silence_threshold_db = float(self.threshold.value())
-        cfg.monitor.silence_seconds = self.window.value()
+        cfg.monitor.warn_seconds = self.warn_window.value()
+        cfg.monitor.silence_seconds = self.silence_window.value()
         cfg.monitor.only_while_recording = self.only_recording.isChecked()
         cfg.monitor.include_streaming = self.include_streaming.isChecked()
         cfg.monitor.ignore_muted = self.ignore_muted.isChecked()
         cfg.alerts.notification = self.notification.isChecked()
         cfg.alerts.sound = self.sound.isChecked()
         cfg.alerts.sound_name = self.sound_name.currentText()
+        cfg.alerts.sound_seconds = self.sound_seconds.value()
         cfg.alerts.speech = self.speech.isChecked()
         cfg.alerts.speech_voice = self.voice.currentData() or ""
         cfg.alerts.repeat_seconds = self.repeat.value()
@@ -399,6 +431,7 @@ class MainWindow(QMainWindow):
         if password:
             self._monitor.reconnect()
         self._apply_language()
+        self._update_dirty()
         self._show_message(tr("ui.saved", self._lang), error=False)
         return True
 
@@ -406,19 +439,31 @@ class MainWindow(QMainWindow):
         self.message.setStyleSheet(f"color: {RED.name()};" if error else f"color: {GREEN.name()};")
         self.message.setText(text)
 
+    def _reveal_config_file(self) -> None:
+        target = self._config_file if self._config_file.exists() else self._config_file.parent
+        subprocess.Popen(["open", "-R", str(target)] if target.is_file() else ["open", str(target)])
+
+    def _update_dirty(self) -> None:
+        dirty = self.to_config() != self._config or bool(self.password.text())
+        self.dirty_label.setVisible(dirty)
+
     def _play_sound(self) -> None:
         command = alerts_module.sound_command(self.sound_name.currentText())
         if command:
             alerts_module.run_detached(command)
 
     def _test_alert_with_form(self) -> None:
-        alerts_module.AlertDispatcher(self.to_config().alerts, self._lang).send_test()
+        alerts_module.AlertDispatcher.create(self.to_config().alerts, self._lang).send_test()
 
     # -- live view ----------------------------------------------------------------------------
 
     def refresh(self, status: Status, levels: dict[str, float | None]) -> None:
         """Render the current state; called several times a second."""
         lang = self._lang
+        now = time.monotonic()
+        if now - self._last_dirty_check >= 1.0:
+            self._last_dirty_check = now
+            self._update_dirty()
         dot_color = {CONNECTED: GREEN, CONNECTING: AMBER}.get(status.connection, RED).name()
         key = {"connected": "conn.connected", "connecting": "conn.connecting"}.get(status.connection, "conn.disconnected")
         text = f'<span style="color:{dot_color}">●</span> <b>{tr(key, lang)}</b>'

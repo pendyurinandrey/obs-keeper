@@ -16,7 +16,9 @@ restarting OBS did. OBS has no built-in warning for this, so `obs-keeper` provid
 [WebSocket server](https://github.com/obsproject/obs-websocket) and subscribes to the audio level
 meters of every input. While OBS is recording, it tracks *the time of the last sample above the
 silence threshold* for each watched input. If that time is older than the configured window, you get
-an alert: a macOS notification, a sound and optionally speech. Because it tracks timestamps, not the
+an alert: a macOS notification, a sound that keeps playing for 15 seconds (repeated on a timer while
+the problem lasts) and optionally speech. Much earlier than that, after 20 seconds of silence, the
+menu-bar icon already turns red and blinks, so a glance at the menu bar is enough to notice. Because it tracks timestamps, not the
 last reported level, an input that stops reporting altogether is caught by the same rule
 (reported as "stopped sending audio").
 
@@ -40,17 +42,24 @@ inputs are ignored, and silence must last for the whole window (default 3 minute
 `obs-keeper` (same as `obs-keeper ui`) starts a menu-bar app:
 
 - **Menu-bar icon.** Solid green disc: watching the audio. Ring: connected, but OBS is not recording.
-  Red "!": audio is lost. Amber "–": no connection to OBS. Click the icon to open the window;
-  right-click (or ctrl-click) for a small menu with *Open* and *Quit*.
+  Blinking red "!": silence, first as an early visual warning (after `monitor.warn_seconds`, 20 s by
+  default), then together with the sound alert (after `monitor.silence_seconds`, 3 min). Amber "–": no
+  connection to OBS. Click the icon to open the window (also when it is minimized); right-click
+  (or ctrl-click) for a small menu with *Open* and *Quit*.
 - **Status tab.** Live peak meters of every OBS input with a marker at your silence threshold
   (handy for choosing the threshold), plus the state of each input: watching, quiet for N s,
   silent, muted, not watched.
 - **Settings tabs.** Connection, monitoring, alerts, self-healing, language (English, Russian or
   automatic). Changes apply on **Save**; the OBS password goes to the macOS keychain.
+- Settings are saved to a JSON file (its path is shown on the **General** tab); the window warns
+  about unsaved changes. They are loaded again at every start; only the password lives in the keychain.
 - Closing the window keeps the watchdog running; quit with the **Quit** button or the icon's menu.
 - Only one instance can run at a time.
 
 Known limitation: a Python app shows a Dock icon while it runs.
+
+If clicking the icon does nothing on your system, start the app with `OBS_KEEPER_DEBUG=1 obs-keeper`;
+it logs what macOS reports for each click.
 
 ## Requirements
 
@@ -99,12 +108,14 @@ Settings live in a JSON file; `obs-keeper config-path` prints its location
 | `obs.host`, `obs.port` | `localhost`, `4455` | Where the OBS WebSocket server listens |
 | `monitor.inputs` | `[]` | Input names to watch; empty = every input that reports levels |
 | `monitor.silence_threshold_db` | `-70` | Peak level at or below this counts as silence |
-| `monitor.silence_seconds` | `180` | How long silence must last before alerting |
+| `monitor.warn_seconds` | `20` | Silence this long turns the menu-bar icon red and makes it blink (no sound yet); capped by `silence_seconds` |
+| `monitor.silence_seconds` | `180` | How long silence must last before the notification and sound alert |
 | `monitor.only_while_recording` | `true` | Watch only during a recording (`false` = whenever connected) |
 | `monitor.include_streaming` | `false` | Also watch while streaming |
 | `monitor.ignore_muted` | `true` | Never alert for inputs muted in OBS |
 | `alerts.notification` / `sound` / `speech` | `true` / `true` / `false` | Alert channels |
 | `alerts.sound_name` | `Sosumi` | Any name from `/System/Library/Sounds` |
+| `alerts.sound_seconds` | `15` | How long the sound is repeated per alert (it stops early when audio returns) |
 | `alerts.speech_voice` | `""` | Voice for `say`; empty = system default |
 | `alerts.repeat_seconds` | `120` | Repeat the alert this often while audio is still missing |
 | `alerts.notify_recovery` | `true` | Quiet notification when sound returns |

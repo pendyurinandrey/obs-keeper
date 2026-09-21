@@ -82,3 +82,99 @@ def test_send_test_is_loud():
     sent = []
     AlertDispatcher(AlertConfig(), "en", runner=sent.append).send_test()
     assert [c[0] for c in sent] == ["osascript", "afplay"]
+
+
+# ---- long alert sound ----
+
+import threading
+import time
+
+from obs_keeper.alerts import SoundPlayer
+
+
+def test_sound_is_played_for_the_configured_duration():
+    plays = []
+
+    class Player:
+        def play(self, command, seconds): plays.append((command, seconds))
+        def stop(self): plays.append("stop")
+
+    AlertDispatcher(AlertConfig(sound_seconds=25), "en", runner=lambda c: None, sound=Player()).handle(
+        Transition(LOST, "a", 60))
+    assert plays == [(["afplay", "/System/Library/Sounds/Sosumi.aiff"], 25)]
+
+
+def test_sound_stops_when_audio_returns():
+    plays = []
+
+    class Player:
+        def play(self, command, seconds): plays.append("play")
+        def stop(self): plays.append("stop")
+
+    d = AlertDispatcher(AlertConfig(), "en", runner=lambda c: None, sound=Player())
+    d.handle(Transition(LOST, "a", 60))
+    d.handle(Transition(RECOVERED, "a", 90))
+    assert plays == ["play", "stop"]
+
+
+class FakeProc:
+    def __init__(self, length):
+        self._end = time.monotonic() + length
+        self.terminated = False
+
+    def poll(self):
+        return 0 if self.terminated or time.monotonic() >= self._end else None
+
+    def terminate(self): self.terminated = True
+    def wait(self): pass
+
+
+class FakePopen:
+    def __init__(self, length=0.1):
+        self.procs, self.length = [], length
+
+    def __call__(self, command, **kw):
+        proc = FakeProc(self.length)
+        self.procs.append(proc)
+        return proc
+
+
+def test_sound_player_repeats_until_the_deadline():
+    popen = FakePopen(0.1)
+    SoundPlayer(popen=popen).play(["afplay", "x"], 0.45)
+    time.sleep(0.9)
+    assert 3 <= len(popen.procs) <= 6
+    assert not any(p.terminated for p in popen.procs)  # the last one plays out, it is not cut
+
+
+def test_sound_player_stop_cuts_the_current_sound_and_ends_the_loop():
+    popen = FakePopen(5)
+    player = SoundPlayer(popen=popen)
+    player.play(["afplay", "x"], 60)
+    time.sleep(0.15)
+    player.stop()
+    time.sleep(0.3)
+    assert len(popen.procs) == 1 and popen.procs[0].terminated
+
+
+def test_a_new_alert_replaces_the_previous_sound():
+    popen = FakePopen(5)
+    player = SoundPlayer(popen=popen)
+    player.play(["afplay", "x"], 60)
+    time.sleep(0.15)
+    player.play(["afplay", "y"], 60)
+    time.sleep(0.3)
+    assert popen.procs[0].terminated and not popen.procs[1].terminated
+    player.stop()
+
+
+def test_missing_afplay_does_not_crash():
+    def broken(*a, **k):
+        raise FileNotFoundError
+
+    SoundPlayer(popen=broken).play(["afplay", "x"], 1)
+    time.sleep(0.1)
+
+
+def test_create_wires_the_looping_player():
+    assert isinstance(AlertDispatcher.create(AlertConfig(), "en")._sound, SoundPlayer)

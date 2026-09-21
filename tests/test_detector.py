@@ -211,3 +211,59 @@ def test_snapshot_reports_level_and_state():
     snap = d.snapshot(4)[0]
     assert (snap.name, snap.peak_db, snap.muted, snap.lost) == ("a", -33.0, False, False)
     assert snap.silent_for == 3
+
+
+# ---- early warning (icon turns red before the alert fires) ----
+
+def make_warn(warn=20, silence=180, **kw):
+    monitor = MonitorConfig(inputs=kw.pop("inputs", []), silence_seconds=silence, warn_seconds=warn,
+                            ignore_muted=kw.pop("ignore_muted", True))
+    return SilenceDetector(monitor, 120, RemediationConfig())
+
+
+def test_warning_appears_after_warn_seconds_long_before_the_alert():
+    d = make_warn(warn=20, silence=180)
+    d.set_active(True, 0)
+    d.on_sample("a", QUIET, 0)
+    assert not d.any_warning(19)
+    assert d.any_warning(20)
+    assert d.snapshot(20)[0].warning
+    assert d.evaluate(20) == []  # no alert yet: the warning is visual only
+    assert not d.any_lost()
+
+
+def test_warning_gives_way_to_lost_and_clears_on_sound():
+    d = make_warn(warn=20, silence=60)
+    d.set_active(True, 0)
+    d.on_sample("a", QUIET, 0)
+    d.evaluate(60)
+    assert d.any_lost() and not d.any_warning(61)
+    d.on_sample("a", LOUD, 62)
+    assert not d.any_lost() and not d.any_warning(63)
+
+
+def test_no_warning_when_muted_or_inactive():
+    d = make_warn()
+    d.set_muted("a", True, 0)
+    d.set_active(True, 0)
+    d.on_sample("a", QUIET, 0)
+    assert not d.any_warning(500)
+    d.set_active(False, 501)
+    assert not d.any_warning(1000)
+
+
+def test_warn_seconds_is_capped_by_the_alert_window():
+    d = make_warn(warn=100, silence=30)
+    d.set_active(True, 0)
+    d.on_sample("a", QUIET, 0)
+    assert d.any_warning(30)
+
+
+def test_warning_is_per_input():
+    d = make_warn(warn=20)
+    d.set_active(True, 0)
+    for now in range(0, 40):
+        d.on_sample("desktop", LOUD, now)
+        d.on_sample("mic", QUIET, now)
+    warned = [s.name for s in d.snapshot(40) if s.warning]
+    assert warned == ["mic"]

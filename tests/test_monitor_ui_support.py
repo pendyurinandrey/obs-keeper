@@ -112,3 +112,16 @@ def test_available_voices_survives_a_missing_binary(monkeypatch):
 
     monkeypatch.setattr(alerts.subprocess, "run", boom)
     assert available_voices() == []
+
+
+def test_status_warning_precedes_the_alert():
+    monitor, clock = make()
+    monitor._on_record_state(True)
+    monitor._on_meters([("Desktop", -91.0)])
+    clock.now += 25  # default warn window is 20 s, alert window 180 s
+    st = monitor.status()
+    assert st.warning and not st.alerting
+    clock.now += 200
+    monitor.tick()
+    st = monitor.status()
+    assert st.alerting and not st.warning

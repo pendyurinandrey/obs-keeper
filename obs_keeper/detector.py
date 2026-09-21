@@ -38,6 +38,7 @@ class InputSnapshot:
     muted: bool
     lost: bool
     reason: str
+    warning: bool = False  # silent longer than warn_seconds, but not yet an alert
 
 
 @dataclass
@@ -148,9 +149,18 @@ class SilenceDetector:
                 muted=w.muted,
                 lost=w.lost_since is not None,
                 reason=self._reason(w, now),
+                warning=self._is_warning(w, now),
             )
             for w in self._watches.values()
         ]
+
+    def any_warning(self, now: float) -> bool:
+        return any(self._is_warning(w, now) for w in self._watches.values())
+
+    def _is_warning(self, watch: _Watch, now: float) -> bool:
+        if watch.lost_since is not None or (watch.muted and self._monitor.ignore_muted):
+            return False
+        return now - watch.last_signal_at >= min(self._monitor.warn_seconds, self._monitor.silence_seconds)
 
     def muted_names(self) -> frozenset[str]:
         return frozenset(self._muted)

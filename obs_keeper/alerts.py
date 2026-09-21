@@ -7,6 +7,7 @@ as a command. The runner is injectable so tests never make noise.
 import re
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -28,6 +29,56 @@ def run_detached(command: list[str]) -> None:
             pass  # alerts are best effort; a missing binary must not crash the watchdog
 
     threading.Thread(target=target, daemon=True).start()
+
+
+class SoundPlayer:
+    """Plays a sound file over and over for a number of seconds; can be cut short.
+
+    ``afplay`` has no loop option, and a single macOS system sound lasts about a second, which is
+    easy to miss while a lecture is playing. A new ``play`` replaces the previous one.
+    """
+
+    def __init__(self, popen=subprocess.Popen, clock=time.monotonic):
+        self._popen = popen
+        self._clock = clock
+        self._cancel = threading.Event()
+        self._lock = threading.Lock()
+
+    def play(self, command: list[str], seconds: float) -> None:
+        with self._lock:
+            self._cancel.set()  # stop the previous loop
+            cancel = self._cancel = threading.Event()
+        threading.Thread(target=self._loop, args=(command, seconds, cancel), daemon=True).start()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._cancel.set()
+
+    def _loop(self, command: list[str], seconds: float, cancel: threading.Event) -> None:
+        deadline = self._clock() + seconds
+        while not cancel.is_set() and self._clock() < deadline:
+            try:
+                proc = self._popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                return  # best effort: no afplay, no sound
+            while proc.poll() is None:
+                if cancel.wait(0.05):
+                    proc.terminate()
+                    break
+            proc.wait()
+
+
+class _RunnerSound:
+    """Plays once through the plain command runner (used by tests and as a fallback)."""
+
+    def __init__(self, runner: "Runner"):
+        self._runner = runner
+
+    def play(self, command: list[str], seconds: float) -> None:
+        self._runner(command)
+
+    def stop(self) -> None:
+        pass
 
 
 def available_sounds() -> list[str]:
@@ -76,10 +127,19 @@ def speech_command(text: str, voice: str) -> list[str]:
 
 
 class AlertDispatcher:
-    def __init__(self, config: AlertConfig, language: str, runner: Runner = run_detached):
+    def __init__(self, config: AlertConfig, language: str, runner: Runner = run_detached, sound=None):
         self.config = config
         self.language = language
         self._run = runner
+        self._sound = sound or _RunnerSound(runner)
+
+    @classmethod
+    def create(cls, config: AlertConfig, language: str) -> "AlertDispatcher":
+        """The real thing: notifications and speech via subprocesses, a looping sound player."""
+        return cls(config, language, run_detached, SoundPlayer())
+
+    def stop_sound(self) -> None:
+        self._sound.stop()
 
     def handle(self, transition: Transition, max_attempts: int = 0) -> None:
         """Deliver the alert that corresponds to a detector transition."""
@@ -90,6 +150,7 @@ class AlertDispatcher:
             body = tr(f"alert.lost.{transition.reason}", lang, input=transition.input_name, duration=duration)
             self.send(title, body, loud=True)
         elif transition.kind == RECOVERED:
+            self.stop_sound()
             if self.config.notify_recovery:
                 body = tr("alert.recovered.body", lang, input=transition.input_name, duration=duration)
                 self.send(tr("alert.recovered.title", lang), body, loud=False)
@@ -110,6 +171,6 @@ class AlertDispatcher:
         if loud and cfg.sound:
             command = sound_command(cfg.sound_name)
             if command:
-                self._run(command)
+                self._sound.play(command, cfg.sound_seconds)
         if loud and cfg.speech:
             self._run(speech_command(f"{title}. {message}", cfg.speech_voice))

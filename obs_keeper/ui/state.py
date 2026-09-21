@@ -5,7 +5,7 @@ from obs_keeper.detector import REASON_NO_DATA, InputSnapshot
 from obs_keeper.i18n import format_duration, tr
 from obs_keeper.monitor import CONNECTED, Status
 
-ALERT, WATCHING, IDLE, OFFLINE = "alert", "watching", "idle", "offline"
+ALERT, WARNING, WATCHING, IDLE, OFFLINE = "alert", "warning", "watching", "idle", "offline"
 
 # A quiet input is only worth mentioning once it has been quiet for a while.
 QUIET_NOTE_AFTER_SECONDS = 5.0
@@ -16,6 +16,8 @@ def tray_state(status: Status) -> str:
         return OFFLINE
     if status.alerting:
         return ALERT
+    if status.warning:
+        return WARNING
     return WATCHING if status.watching else IDLE
 
 
@@ -34,6 +36,8 @@ def input_state(name: str, status: Status, config: Config, language: str) -> tup
     if snapshot.lost:
         key = "ui.input.no_data" if snapshot.reason == REASON_NO_DATA else "ui.input.lost"
         return tr(key, language, duration=duration), "bad"
+    if snapshot.warning:
+        return tr("ui.input.quiet", language, duration=duration), "bad"
     if snapshot.silent_for >= QUIET_NOTE_AFTER_SECONDS:
         return tr("ui.input.quiet", language, duration=duration), "warn"
     return tr("ui.input.watching", language), "ok"

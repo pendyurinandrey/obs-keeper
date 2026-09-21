@@ -80,8 +80,8 @@ def cmd_inputs(args: argparse.Namespace) -> int:
 
 def cmd_test_alert(args: argparse.Namespace) -> int:
     config, language = _load(args)
-    AlertDispatcher(config.alerts, language).send_test()
-    time.sleep(3)  # alerts run in daemon threads; give them a moment before the process exits
+    AlertDispatcher.create(config.alerts, language).send_test()
+    time.sleep(config.alerts.sound_seconds + 1)  # sound and notification run in daemon threads
     return 0
 
 

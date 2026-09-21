@@ -35,7 +35,8 @@ class Status:
     recording: bool = False
     streaming: bool = False
     watching: bool = False  # the detector is armed (e.g. recording is on)
-    alerting: bool = False  # at least one input is currently lost
+    alerting: bool = False  # at least one input is currently lost (alerts are firing)
+    warning: bool = False  # at least one input has been silent a while, alerts not yet firing
     inputs: list[InputSnapshot] = field(default_factory=list)
     muted: frozenset[str] = frozenset()
 
@@ -54,7 +55,7 @@ class Monitor:
         self._connect = connect
         self._clock = clock
         self._language = resolve_language(config.language)
-        self._alerts = dispatcher or AlertDispatcher(config.alerts, self._language)
+        self._alerts = dispatcher or AlertDispatcher.create(config.alerts, self._language)
         self._detector = SilenceDetector(config.monitor, config.alerts.repeat_seconds, config.remediation)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -87,6 +88,7 @@ class Monitor:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._alerts.stop_sound()
         if self._thread:
             self._thread.join(timeout=10)
 
@@ -125,6 +127,7 @@ class Monitor:
                 streaming=self._streaming,
                 watching=self._detector.active,
                 alerting=self._detector.any_lost(),
+                warning=self._detector.any_warning(now),
                 inputs=self._detector.snapshot(now),
                 muted=self._detector.muted_names(),
             )

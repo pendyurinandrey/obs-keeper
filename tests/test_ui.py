@@ -50,7 +50,7 @@ def test_every_setting_is_editable_and_saved(env):
     env.selected_inputs.setChecked(True)
     env.inputs_list.item(1).setCheckState(env.inputs_list.item(1).checkState().__class__.Checked)
     env.threshold.setValue(-55)
-    env.window.setValue(90)
+    env.silence_window.setValue(90)
     env.only_recording.setChecked(False)
     env.include_streaming.setChecked(True)
     env.ignore_muted.setChecked(False)
@@ -88,14 +88,14 @@ def test_all_inputs_option_saves_an_empty_list(env):
 
 
 def test_invalid_values_are_not_saved(env):
-    env.window.setValue(5)
+    env.silence_window.setValue(5)
     env.repeat.setValue(10)
     env.threshold.setValue(0)
     assert env.save()  # boundary values are valid
     env.rec.saved.clear()
     env._config.language = "auto"
-    env.window.setMinimum(1)
-    env.window.setValue(1)
+    env.silence_window.setMinimum(1)
+    env.silence_window.setValue(1)
     assert not env.save()
     assert env.rec.saved == []
     assert "silence_seconds" in env.message.text()
@@ -129,7 +129,7 @@ def test_language_switch_retranslates_everything(env):
     assert env.save_button.text() == "Сохранить"
     assert env.windowTitle() == "OBS Keeper"
     assert env.voice.itemText(0) == "Системный по умолчанию"
-    assert env.window.suffix() == " с"
+    assert env.silence_window.suffix() == " с"
     env.language.setCurrentIndex(env.language.findData("en"))
     env.save()
     assert env.tabs.tabText(0) == "Status"
@@ -200,3 +200,84 @@ def test_tray_click_opens_window_and_tooltip_follows_state(env):
     assert not env.isVisible()
     tray._on_activated(QSystemTrayIcon.ActivationReason.Trigger)
     assert env.isVisible()
+
+
+# ---- issues found in manual testing ----
+
+def test_open_restores_a_minimized_window(env, qapp):
+    tray = TrayController(env)
+    env.show()
+    env.showMinimized()
+    qapp.processEvents()
+    assert env.isMinimized()
+    tray.show_window()
+    qapp.processEvents()
+    assert env.isVisible() and not env.isMinimized()
+
+
+def test_open_menu_action_and_any_click_but_context_open_the_window(env, qapp):
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    tray = TrayController(env)
+    reasons = QSystemTrayIcon.ActivationReason
+    for reason in (reasons.Trigger, reasons.DoubleClick, reasons.MiddleClick):
+        env.hide()
+        tray._on_activated(reason)
+        assert env.isVisible(), reason
+    env.showMinimized()
+    qapp.processEvents()
+    tray.open_action.trigger()
+    qapp.processEvents()
+    assert env.isVisible() and not env.isMinimized()
+
+
+def test_tray_icon_blinks_only_while_silent(env):
+    tray = TrayController(env)
+    tray.update(Status(connection=CONNECTED, watching=True, warning=True), "en")
+    assert tray._blink.isActive()
+    assert tray.tray.toolTip() == "OBS Keeper: no sound for a while"
+    before = tray.tray.icon().cacheKey()
+    tray._toggle_blink()
+    assert tray.tray.icon().cacheKey() != before
+    tray.update(Status(connection=CONNECTED, watching=True, alerting=True), "en")
+    assert tray._blink.isActive()
+    tray.update(Status(connection=CONNECTED, watching=True), "en")
+    assert not tray._blink.isActive()
+
+
+def test_new_settings_are_editable_and_saved(env):
+    env.warn_window.setValue(30)
+    env.sound_seconds.setValue(45)
+    env.silence_window.setValue(120)
+    assert env.save()
+    cfg = env.rec.saved[-1]
+    assert (cfg.monitor.warn_seconds, cfg.alerts.sound_seconds, cfg.monitor.silence_seconds) == (30, 45, 120)
+
+
+def test_unsaved_changes_are_flagged_and_cleared_by_save_or_revert(env):
+    env.show()
+    assert not env.dirty_label.isVisible()
+    env.warn_window.setValue(33)
+    env._update_dirty()
+    assert env.dirty_label.isVisible()
+    env.revert_button.click()
+    assert not env.dirty_label.isVisible()
+    env.password.setText("x")
+    env._update_dirty()
+    assert env.dirty_label.isVisible()
+    env.save()
+    assert not env.dirty_label.isVisible()
+
+
+def test_settings_file_location_is_shown(qapp, tmp_path):
+    config = Config()
+    target = tmp_path / "cfg" / "config.json"
+    window = MainWindow(Monitor(config, lambda: ""), config, save=lambda c: None,
+                        store_password=lambda p: None, config_file=target)
+    assert window.config_location.text() == str(target)
+
+
+def test_activate_app_never_raises():
+    from obs_keeper.ui.macos import activate_app
+
+    activate_app()

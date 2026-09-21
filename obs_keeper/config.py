@@ -23,6 +23,7 @@ class MonitorConfig:
     inputs: list[str] = field(default_factory=list)
     silence_threshold_db: float = -70.0
     silence_seconds: int = 180
+    warn_seconds: int = 20  # the icon turns red after this much silence (no sound yet); capped by silence_seconds
     only_while_recording: bool = True
     include_streaming: bool = False
     ignore_muted: bool = True
@@ -33,6 +34,7 @@ class AlertConfig:
     notification: bool = True
     sound: bool = True
     sound_name: str = "Sosumi"
+    sound_seconds: int = 15  # the sound is repeated for this long, so it cuts through a lecture
     speech: bool = False
     speech_voice: str = ""
     repeat_seconds: int = 120
@@ -62,8 +64,12 @@ class Config:
             problems.append("obs.port must be 1..65535")
         if self.monitor.silence_seconds < 5:
             problems.append("monitor.silence_seconds must be at least 5")
+        if self.monitor.warn_seconds < 1:
+            problems.append("monitor.warn_seconds must be at least 1")
         if not -120.0 <= self.monitor.silence_threshold_db <= 0.0:
             problems.append("monitor.silence_threshold_db must be between -120 and 0")
+        if not 1 <= self.alerts.sound_seconds <= 300:
+            problems.append("alerts.sound_seconds must be 1..300")
         if self.alerts.repeat_seconds < 10:
             problems.append("alerts.repeat_seconds must be at least 10")
         if self.remediation.max_attempts < 0:

@@ -65,6 +65,15 @@ Detection logic must stay testable without OBS.
 - **Self-healing is unverified.** Hiding/showing the scene item may not re-create the ScreenCaptureKit
   stream. Verify on a live OBS by watching for a new `captureSession` in
   `log show --predicate 'process == "replayd"'`.
+- **Restoring the window.** `QWidget.show()` does not un-minimize; `TrayController.show_window()` uses
+  `showNormal()` and also asks macOS to activate the app (`ui/macos.py`, best effort). Any tray
+  activation except `Context` opens the window. `OBS_KEEPER_DEBUG=1` logs the activation reason.
+- **Two thresholds.** `monitor.warn_seconds` only drives the visual warning (`Status.warning`, red
+  blinking icon); `monitor.silence_seconds` fires alerts. The detector caps warn by silence.
+- **Alert sound is a loop.** `afplay` plays a ~1 s system sound once; `SoundPlayer` repeats it for
+  `alerts.sound_seconds` and is cancelled on recovery/quit. Production code builds the dispatcher with
+  `AlertDispatcher.create(...)`; tests construct it directly with a runner (silent, single play).
+- Do not name a widget attribute after a `QWidget` method (`self.window` shadowed `window()`).
 - **Tray click vs. menu.** On macOS a `QSystemTrayIcon` with `setContextMenu()` swallows the plain
   click, so the menu is shown manually on the `Context` activation; a plain click opens the window.
   The tray itself cannot be exercised offscreen; check it by launching the app on a real desktop.
