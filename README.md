@@ -31,9 +31,26 @@ inputs are ignored, and silence must last for the whole window (default 3 minute
 | Part | State |
 |---|---|
 | Core watchdog (detector, alerts, OBS client, self-healing) | implemented, covered by tests |
-| Command line (`obs-keeper run`, `inputs`, `test-alert`, `set-password`) | implemented |
-| PySide6 settings UI with menu-bar icon (English/Russian) | planned |
-| Not yet verified against a real occurrence of the bug | self-healing in particular is experimental |
+| Menu-bar icon + window with live levels and settings (English/Russian) | implemented |
+| Command line (`run`, `inputs`, `test-alert`, `set-password`) | implemented |
+| Verified against a real occurrence of the bug | not yet; self-healing in particular is experimental |
+
+## The app
+
+`obs-keeper` (same as `obs-keeper ui`) starts a menu-bar app:
+
+- **Menu-bar icon.** Solid green disc: watching the audio. Ring: connected, but OBS is not recording.
+  Red "!": audio is lost. Amber "–": no connection to OBS. Click the icon to open the window;
+  right-click (or ctrl-click) for a small menu with *Open* and *Quit*.
+- **Status tab.** Live peak meters of every OBS input with a marker at your silence threshold
+  (handy for choosing the threshold), plus the state of each input: watching, quiet for N s,
+  silent, muted, not watched.
+- **Settings tabs.** Connection, monitoring, alerts, self-healing, language (English, Russian or
+  automatic). Changes apply on **Save**; the OBS password goes to the macOS keychain.
+- Closing the window keeps the watchdog running; quit with the **Quit** button or the icon's menu.
+- Only one instance can run at a time.
+
+Known limitation: a Python app shows a Dock icon while it runs.
 
 ## Requirements
 
@@ -48,28 +65,28 @@ inputs are ignored, and silence must last for the whole window (default 3 minute
 
    ```shell
    python3 -m venv venv && source venv/bin/activate
-   pip install -e .
+   pip install -e ".[ui]"
    ```
 
-3. Store the password in the macOS keychain (it is never written to the config file):
+   (`pip install -e .` without `[ui]` gives the headless command line only.)
+3. Start the app, enter the password on the **Connection** tab and press **Save**
+   (it is stored in the macOS keychain and never written to the config file):
 
    ```shell
-   obs-keeper set-password
+   obs-keeper
    ```
 
-   Alternatively export `OBS_KEEPER_PASSWORD`; it takes precedence over the keychain.
-4. Look at what OBS exposes, and check that alerts reach you:
+   Leave it running while you record. Use **Send test alert** on the Status tab to check that you
+   see and hear alerts. (Do not test while OBS is recording: the sound would end up in the recording.)
 
-   ```shell
-   obs-keeper inputs
-   obs-keeper test-alert
-   ```
+### Without the UI
 
-5. Start watching (leave it running while you record):
-
-   ```shell
-   obs-keeper run
-   ```
+```shell
+obs-keeper set-password   # or export OBS_KEEPER_PASSWORD
+obs-keeper inputs         # what OBS exposes
+obs-keeper test-alert
+obs-keeper run            # watch until Ctrl+C
+```
 
 ## Configuration
 
@@ -95,7 +112,7 @@ Settings live in a JSON file; `obs-keeper config-path` prints its location
 | `remediation.after_seconds` | `30` | Wait this long after the alert before the first attempt |
 | `remediation.max_attempts` | `2` | Attempts per outage |
 | `remediation.cooldown_seconds` | `300` | Minimum time between attempts |
-| `language` | `auto` | `auto`, `en` or `ru` (alerts and, later, the UI) |
+| `language` | `auto` | `auto`, `en` or `ru` (alerts and UI) |
 
 Self-healing only works for inputs that are items of a scene (e.g. **macOS Screen Capture**), not for
 global audio devices.
@@ -110,12 +127,12 @@ both inputs with `obs-keeper`.
 ## Development
 
 ```shell
-pip install -e ".[dev]"
+pip install -e ".[ui,dev]"
 python -m pytest
 ```
 
-Tests need neither OBS nor a sound card: OBS is replaced by a small fake obs-websocket server
-(`tests/fake_obs.py`), alert commands are captured instead of run. See [CLAUDE.md](CLAUDE.md) for
+Tests need neither OBS, a display nor a sound card: OBS is replaced by a small fake obs-websocket
+server (`tests/fake_obs.py`), Qt runs in `offscreen` mode, alert commands are captured instead of run. See [CLAUDE.md](CLAUDE.md) for
 the layout and the rules for contributors.
 
 ## License

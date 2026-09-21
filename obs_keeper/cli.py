@@ -52,6 +52,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    try:
+        from obs_keeper.ui.app import run_ui
+    except ImportError:
+        print(tr("ui.missing_pyside", resolve_language(load_config(Path(args.config) if args.config else None).language)),
+              file=sys.stderr)
+        return 1
+    return run_ui(Path(args.config) if args.config else None)
+
+
 def cmd_inputs(args: argparse.Namespace) -> int:
     config, language = _load(args)
     try:
@@ -93,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="path to config.json (default: see `config-path`)")
     sub = parser.add_subparsers(dest="command")
     for name, func, help_text in (
+        ("ui", cmd_ui, "menu-bar app with a settings window (default)"),
         ("run", cmd_run, "watch OBS without a UI"),
         ("inputs", cmd_inputs, "list OBS inputs (name<TAB>kind)"),
         ("test-alert", cmd_test_alert, "send a test alert through the configured channels"),
@@ -106,10 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not getattr(args, "func", None):
-        parser.print_help()
-        return 2
-    return args.func(args)
+    return getattr(args, "func", cmd_ui)(args)
 
 
 if __name__ == "__main__":

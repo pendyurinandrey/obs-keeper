@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from obs_keeper.alerts import AlertDispatcher
 from obs_keeper.config import Config
-from obs_keeper.detector import RECOVERED, REMEDIATE, InputSnapshot, SilenceDetector, Transition
+from obs_keeper.detector import NO_DATA_AFTER_SECONDS, RECOVERED, REMEDIATE, InputSnapshot, SilenceDetector, Transition
 from obs_keeper.i18n import resolve_language, tr
 from obs_keeper.obs_client import ObsConnection, ObsError, ObsSink
 
@@ -37,6 +37,7 @@ class Status:
     watching: bool = False  # the detector is armed (e.g. recording is on)
     alerting: bool = False  # at least one input is currently lost
     inputs: list[InputSnapshot] = field(default_factory=list)
+    muted: frozenset[str] = frozenset()
 
 
 class Monitor:
@@ -57,6 +58,7 @@ class Monitor:
         self._detector = SilenceDetector(config.monitor, config.alerts.repeat_seconds, config.remediation)
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._wake = threading.Event()  # cuts the wait before the next connection attempt
         self._thread: threading.Thread | None = None
         self._listeners: list[Callable[[Status], None]] = []
         self._conn: ObsConnection | None = None
@@ -64,6 +66,9 @@ class Monitor:
         self._error = ""
         self._recording = False
         self._streaming = False
+        self._known_inputs: list[tuple[str, str]] = []
+        self._peaks: dict[str, float] = {}  # loudest peak per input since the last take_levels()
+        self._last_seen: dict[str, float] = {}
 
     # -- public API ---------------------------------------------------------------------------
 
@@ -75,11 +80,13 @@ class Monitor:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._run, name="obs-keeper-monitor", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         if self._thread:
             self._thread.join(timeout=10)
 
@@ -98,6 +105,13 @@ class Monitor:
         if reconnect and self._conn:
             self._conn.close()  # the worker notices and reconnects with the new settings
 
+    def reconnect(self) -> None:
+        """Drop the current connection (if any) and connect again right away."""
+        self._wake.set()
+        conn = self._conn
+        if conn:
+            conn.close()
+
     def send_test_alert(self) -> None:
         self._alerts.send_test()
 
@@ -112,17 +126,28 @@ class Monitor:
                 watching=self._detector.active,
                 alerting=self._detector.any_lost(),
                 inputs=self._detector.snapshot(now),
+                muted=self._detector.muted_names(),
             )
 
+    def take_levels(self) -> dict[str, float | None]:
+        """Loudest peak (dBFS) of every input seen so far since the previous call.
+
+        ``None`` means the input has not reported for a few seconds. Meant for a UI meter polled
+        several times a second: it never misses a short peak between two polls.
+        """
+        with self._lock:
+            now = self._clock()
+            levels = {}
+            for name, seen in self._last_seen.items():
+                fresh = now - seen <= NO_DATA_AFTER_SECONDS
+                levels[name] = self._peaks.get(name) if fresh else None
+            self._peaks.clear()
+            return levels
+
     def list_inputs(self) -> list[tuple[str, str]]:
-        """Inputs known to OBS right now (empty when not connected)."""
-        conn = self._conn
-        if conn is None:
-            return []
-        try:
-            return conn.list_inputs()
-        except Exception:  # noqa: BLE001 - the connection may die at any moment
-            return []
+        """``(name, kind)`` of the inputs OBS had at the last refresh; empty when not connected."""
+        with self._lock:
+            return list(self._known_inputs)
 
     # -- worker -------------------------------------------------------------------------------
 
@@ -131,7 +156,8 @@ class Monitor:
             conn = self._try_connect()
             if conn is None:
                 self._notify()
-                self._stop.wait(RETRY_SECONDS)
+                self._wake.wait(RETRY_SECONDS)
+                self._wake.clear()
                 continue
             try:
                 self._serve(conn)
@@ -144,11 +170,13 @@ class Monitor:
                 conn.close()
                 with self._lock:
                     self._recording = self._streaming = False
+                    self._known_inputs = []
                     self._detector.set_active(False, self._clock())
                 self._notify()
         self._set_connection(DISCONNECTED, "")
 
     def _try_connect(self) -> ObsConnection | None:
+        self._wake.clear()
         self._set_connection(CONNECTING, "")
         self._notify()
         cfg = self._config.obs
@@ -165,9 +193,11 @@ class Monitor:
     def _serve(self, conn: ObsConnection) -> None:
         now = self._clock()
         recording, streaming, muted = conn.recording_active(), conn.streaming_active(), conn.muted_inputs()
+        inputs = conn.list_inputs()
         self._conn = conn
         with self._lock:
             self._recording, self._streaming = recording, streaming
+            self._known_inputs = inputs
             for name in muted:
                 self._detector.set_muted(name, True, now)
             self._refresh_active()
@@ -180,6 +210,9 @@ class Monitor:
                 raise ObsError("other", "connection closed")
             if ticks % HEARTBEAT_EVERY_TICKS == 0:
                 conn.ping()
+                inputs = conn.list_inputs()
+                with self._lock:
+                    self._known_inputs = inputs
             self.tick(conn)
             self._notify()
 
@@ -200,6 +233,8 @@ class Monitor:
         transitions: list[Transition] = []
         with self._lock:
             for name, db in levels:
+                self._last_seen[name] = now
+                self._peaks[name] = max(db, self._peaks.get(name, db))
                 transitions += self._detector.on_sample(name, db, now)
         for transition in transitions:
             self._deliver(transition, 0)

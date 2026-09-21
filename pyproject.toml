@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["PySide6>=6.7"]
-dev = ["pytest", "websockets>=13"]
+dev = ["pytest", "websockets>=13", "PySide6>=6.7"]
 
 [project.scripts]
 obs-keeper = "obs_keeper.cli:main"

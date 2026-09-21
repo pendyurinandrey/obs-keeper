@@ -20,7 +20,7 @@ _VOICE_RE = re.compile(r"^[\w][\w .()-]*$")
 Runner = Callable[[list[str]], None]
 
 
-def _run_detached(command: list[str]) -> None:
+def run_detached(command: list[str]) -> None:
     def target() -> None:
         try:
             subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
@@ -36,6 +36,19 @@ def available_sounds() -> list[str]:
         return sorted(p.stem for p in SOUNDS_DIR.glob("*.aiff"))
     except OSError:
         return []
+
+
+_VOICE_LINE_RE = re.compile(r"^(.+?)\s{2,}[a-z]{2}_[A-Z]{2}\b")
+
+
+def available_voices() -> list[str]:
+    """Names of installed macOS voices (``say -v '?'``); empty if the command is unavailable."""
+    try:
+        out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names = (m.group(1).strip() for m in map(_VOICE_LINE_RE.match, out.splitlines()) if m)
+    return sorted(set(names))
 
 
 def notification_command(title: str, message: str) -> list[str]:
@@ -63,7 +76,7 @@ def speech_command(text: str, voice: str) -> list[str]:
 
 
 class AlertDispatcher:
-    def __init__(self, config: AlertConfig, language: str, runner: Runner = _run_detached):
+    def __init__(self, config: AlertConfig, language: str, runner: Runner = run_detached):
         self.config = config
         self.language = language
         self._run = runner

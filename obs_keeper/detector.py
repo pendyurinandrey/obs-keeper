@@ -152,6 +152,9 @@ class SilenceDetector:
             for w in self._watches.values()
         ]
 
+    def muted_names(self) -> frozenset[str]:
+        return frozenset(self._muted)
+
     def any_lost(self) -> bool:
         return any(w.lost_since is not None for w in self._watches.values())
 

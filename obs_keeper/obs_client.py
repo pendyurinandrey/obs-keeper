@@ -5,6 +5,7 @@ OBS with a fake.
 """
 
 import logging
+import threading
 import time
 from typing import Protocol
 
@@ -15,8 +16,9 @@ from websocket import WebSocketConnectionClosedException
 
 from obs_keeper.levels import peak_db
 
-# SECURITY: obsws-python logs "password='...'" in clear text at INFO level. Keep it at WARNING+.
-logging.getLogger("obsws_python").setLevel(logging.WARNING)
+# SECURITY: obsws-python logs "password='...'" in clear text at INFO level. Keep it above INFO.
+# Its ERROR lines only duplicate the ObsError we raise ourselves, so silence it further.
+logging.getLogger("obsws_python").setLevel(logging.CRITICAL)
 
 log = logging.getLogger(__name__)
 
@@ -73,9 +75,29 @@ class _Events:
         self._sink.obs_exiting()
 
 
+class _LockedRequests:
+    """obsws-python sends a request and then reads the next frame from the same socket, so two
+    threads issuing requests would steal each other's answers. Serialize every call."""
+
+    def __init__(self, req: obsws.ReqClient):
+        self._req = req
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name):
+        method = getattr(self._req, name)
+        if not callable(method):
+            return method
+
+        def call(*args, **kwargs):
+            with self._lock:
+                return method(*args, **kwargs)
+
+        return call
+
+
 class ObsConnection:
     def __init__(self, req: obsws.ReqClient, events: obsws.EventClient):
-        self._req = req
+        self._req = _LockedRequests(req)
         self._events = events
 
     @classmethod
